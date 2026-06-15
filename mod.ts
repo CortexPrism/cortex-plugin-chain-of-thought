@@ -434,25 +434,11 @@ const evaluateReasoning: Tool = {
 // Middleware: pre-execution (injects strategy system prompt before each agent turn)
 // ---------------------------------------------------------------------------
 
-export const preMiddleware = async (
-  _toolName: string,
-  args: Record<string, unknown>,
-  _ctx: PluginContext,
-): Promise<{ allowed: boolean; args: Record<string, unknown>; reason?: string }> => {
-  return { allowed: true, args };
-};
 
 // ---------------------------------------------------------------------------
 // Middleware: post-execution (evaluates reasoning quality after each turn)
 // ---------------------------------------------------------------------------
 
-export const postMiddleware = async (
-  toolName: string,
-  result: ToolCallResult,
-  _ctx: PluginContext,
-): Promise<ToolCallResult> => {
-  return result;
-};
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -488,7 +474,3 @@ export const tools: Tool[] = [
   selectStrategy,
   evaluateReasoning,
 ];
-
-// Unused vars are intentional — middleware params kept for interface compliance.
-void preMiddleware;
-void postMiddleware;

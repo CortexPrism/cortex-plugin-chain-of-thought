@@ -1,7 +1,7 @@
 {
   "name": "cortex-plugin-chain-of-thought",
-  "version": "1.0.0",
-  "description": "Chain-of-Thought Agent Strategy — pluggable reasoning strategies for Cortex agents",
+  "version": "1.0.1",
+  "description": "Chain-of-Thought Agent Strategy \u2014 pluggable reasoning strategies for Cortex agents",
   "type": "module",
   "main": "mod.ts",
   "scripts": {
