@@ -1,0 +1,145 @@
+{
+  "name": "cortex-plugin-chain-of-thought",
+  "version": "1.0.0",
+  "description": "Pluggable reasoning strategies (Chain-of-Thought, Tree-of-Thoughts, ReAct, Plan-and-Execute) that agents can dynamically select per-task for smarter problem-solving",
+  "kind": "esm",
+  "entryPoint": "mod.ts",
+  "runtime": "deno",
+  "author": "CortexPrism",
+  "license": "MIT",
+  "repository": "https://github.com/CortexPrism/cortex-plugin-chain-of-thought",
+  "homepage": "https://cortexprism.io/marketplace/plugins/chain-of-thought",
+  "capabilities": [
+    "tools",
+    "middleware:pre",
+    "middleware:post"
+  ],
+  "tools": [
+    {
+      "name": "reason",
+      "description": "Execute a reasoning strategy on a given problem. The strategy determines how the problem is decomposed and solved step-by-step.",
+      "params": [
+        {
+          "name": "problem",
+          "type": "string",
+          "description": "The problem or question to reason about",
+          "required": true
+        },
+        {
+          "name": "strategy",
+          "type": "string",
+          "description": "Reasoning strategy to use",
+          "required": false,
+          "enum": ["cot", "tot", "react", "plan_execute", "auto"]
+        },
+        {
+          "name": "context",
+          "type": "string",
+          "description": "Optional context to include in reasoning (e.g., file contents, error messages)",
+          "required": false
+        },
+        {
+          "name": "max_steps",
+          "type": "number",
+          "description": "Maximum reasoning steps before concluding (default: 10)",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "list_strategies",
+      "description": "List all available reasoning strategies with descriptions and best-use recommendations.",
+      "params": []
+    },
+    {
+      "name": "select_strategy",
+      "description": "Auto-select the best reasoning strategy for a given task based on its characteristics (complexity, domain, required structure).",
+      "params": [
+        {
+          "name": "task_description",
+          "type": "string",
+          "description": "Description of the task to match a strategy for",
+          "required": true
+        },
+        {
+          "name": "task_type",
+          "type": "string",
+          "description": "Type of task to help strategy selection",
+          "required": false,
+          "enum": ["coding", "debugging", "planning", "analysis", "creative", "math", "decision"]
+        }
+      ]
+    },
+    {
+      "name": "evaluate_reasoning",
+      "description": "Evaluate the quality of a reasoning trace — checks for logical gaps, unsupported claims, and overall coherence. Returns a score and improvement suggestions.",
+      "params": [
+        {
+          "name": "reasoning_trace",
+          "type": "string",
+          "description": "The full reasoning trace to evaluate",
+          "required": true
+        },
+        {
+          "name": "criteria",
+          "type": "string",
+          "description": "Comma-separated evaluation criteria (e.g., 'logic,completeness,clarity')",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "peerDependencies": {
+    "cortex": ">=1.0.0"
+  },
+  "ui": {
+    "settings": [
+      {
+        "section": "General",
+        "fields": [
+          {
+            "key": "defaultStrategy",
+            "label": "Default Strategy",
+            "type": "select",
+            "defaultValue": "auto",
+            "options": [
+              { "label": "Auto-detect", "value": "auto" },
+              { "label": "Chain-of-Thought", "value": "cot" },
+              { "label": "Tree-of-Thoughts", "value": "tot" },
+              { "label": "ReAct", "value": "react" },
+              { "label": "Plan-and-Execute", "value": "plan_execute" }
+            ],
+            "description": "Default reasoning strategy when none is specified"
+          },
+          {
+            "key": "maxTreeDepth",
+            "label": "Max Tree Depth (ToT)",
+            "type": "number",
+            "defaultValue": 5,
+            "description": "Maximum depth for Tree-of-Thoughts branching"
+          },
+          {
+            "key": "treeBreadth",
+            "label": "Tree Breadth (ToT)",
+            "type": "number",
+            "defaultValue": 3,
+            "description": "Number of branches to explore per node in Tree-of-Thoughts"
+          },
+          {
+            "key": "reactMaxIterations",
+            "label": "ReAct Max Iterations",
+            "type": "number",
+            "defaultValue": 15,
+            "description": "Maximum thought-action-observation cycles for ReAct strategy"
+          }
+        ]
+      }
+    ]
+  },
+  "aiDisclosure": {
+    "tools": [
+      "Claude Code (Anthropic) — initial scaffold and implementation"
+    ],
+    "humanReview": true
+  }
+}
