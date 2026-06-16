@@ -3,7 +3,7 @@
   "version": "1.0.1",
   "description": "Pluggable reasoning strategies (Chain-of-Thought, Tree-of-Thoughts, ReAct, Plan-and-Execute) that agents can dynamically select per-task for smarter problem-solving",
   "kind": "esm",
-  "entryPoint": "mod.ts",
+  "entryPoint": "./mod.ts",
   "runtime": "deno",
   "author": "CortexPrism",
   "license": "MIT",
