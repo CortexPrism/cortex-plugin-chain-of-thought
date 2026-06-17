@@ -19,6 +19,10 @@ export interface ToolParam {
   description: string;
   required?: boolean;
   enum?: string[];
+  /** @deprecated Use manifest-level config defaults instead. */
+  default?: unknown;
+  /** @deprecated Use manifest-level config defaults instead. */
+  defaultValue?: unknown;
 }
 
 export interface ToolDefinition {
