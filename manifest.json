@@ -1,6 +1,6 @@
 {
   "name": "cortex-plugin-chain-of-thought",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Pluggable reasoning strategies (Chain-of-Thought, Tree-of-Thoughts, ReAct, Plan-and-Execute) that agents can dynamically select per-task for smarter problem-solving",
   "kind": "esm",
   "entryPoint": "mod.ts",
@@ -101,6 +101,7 @@
       ]
     }
   ],
+  "dependencies": {},
   "peerDependencies": {
     "cortex": ">=1.0.0"
   },
@@ -113,8 +114,9 @@
             "key": "defaultStrategy",
             "label": "Default Strategy",
             "type": "select",
-            "defaultValue": "auto",
-            "options": [
+            "description": "Default reasoning strategy when none is specified",
+            "default": "auto",
+            "enum": [
               {
                 "label": "Auto-detect",
                 "value": "auto"
@@ -135,29 +137,28 @@
                 "label": "Plan-and-Execute",
                 "value": "plan_execute"
               }
-            ],
-            "description": "Default reasoning strategy when none is specified"
+            ]
           },
           {
             "key": "maxTreeDepth",
             "label": "Max Tree Depth (ToT)",
             "type": "number",
-            "defaultValue": 5,
-            "description": "Maximum depth for Tree-of-Thoughts branching"
+            "description": "Maximum depth for Tree-of-Thoughts branching",
+            "default": 5
           },
           {
             "key": "treeBreadth",
             "label": "Tree Breadth (ToT)",
             "type": "number",
-            "defaultValue": 3,
-            "description": "Number of branches to explore per node in Tree-of-Thoughts"
+            "description": "Number of branches to explore per node in Tree-of-Thoughts",
+            "default": 3
           },
           {
             "key": "reactMaxIterations",
             "label": "ReAct Max Iterations",
             "type": "number",
-            "defaultValue": 15,
-            "description": "Maximum thought-action-observation cycles for ReAct strategy"
+            "description": "Maximum thought-action-observation cycles for ReAct strategy",
+            "default": 15
           }
         ]
       }
