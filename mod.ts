@@ -8,41 +8,14 @@
  */
 
 import type { PluginContext, Tool, ToolCallResult } from 'cortex/plugins';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type StrategyId = 'cot' | 'tot' | 'react' | 'plan_execute';
-
-interface StrategyInfo {
-  id: StrategyId;
-  name: string;
-  description: string;
-  bestFor: string[];
-  steps: string;
-}
-
-interface ReasonStep {
-  step: number;
-  content: string;
-  type: 'thought' | 'action' | 'observation' | 'plan' | 'result';
-}
-
-interface ReasonResult {
-  strategy: StrategyId;
-  problem: string;
-  steps: ReasonStep[];
-  conclusion: string;
-  confidence: number;
-}
-
-interface CoTConfig {
-  defaultStrategy: string;
-  maxTreeDepth: number;
-  treeBreadth: number;
-  reactMaxIterations: number;
-}
+import type {
+  CoTConfig,
+  ReasonResult,
+  ReasonStep,
+  StrategyId,
+  StrategyInfo,
+  ToolContext,
+} from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Module-level config
@@ -99,153 +72,443 @@ const STRATEGIES: Record<StrategyId, StrategyInfo> = {
 };
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Deterministic helpers (no Math.random)
 // ---------------------------------------------------------------------------
 
-function resolveStrategy(strategy: string | undefined, taskType: string | undefined): StrategyId {
+/** Simple deterministic hash of a string to a number in [0, 1) */
+function deterministicFraction(input: string, seed: number): number {
+  let hash = seed;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
+  }
+  return ((hash >>> 0) % 1000) / 1000;
+}
+
+/** Clamp a number to [min, max] */
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/** Count words in a string */
+function wordCount(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+/** Extract key phrases from text by splitting on punctuation */
+function extractKeyPhrases(text: string, maxPhrases: number): string[] {
+  const cleaned = text.replace(/[^\w\s.,;:!?-]/g, '');
+  const sentences = cleaned.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+  if (sentences.length === 0) return [text.trim()];
+  return sentences.slice(0, maxPhrases).map((s) => s.trim());
+}
+
+/** Detect domain keywords in text */
+function detectDomains(text: string): string[] {
+  const lower = text.toLowerCase();
+  const domains: string[] = [];
+  const patterns: [string, RegExp][] = [
+    ['math', /\b(math|calculate|compute|equation|formula|number|sum|product)\b/],
+    ['debugging', /\b(debug|fix|error|bug|crash|fail|broken|issue|trace)\b/],
+    ['planning', /\b(plan|design|architect|strategy|roadmap|organize|schedule)\b/],
+    ['coding', /\b(code|function|api|module|class|import|export|type|interface)\b/],
+    ['creative', /\b(create|generate|design|imagine|innovate|brainstorm|idea)\b/],
+    ['decision', /\b(decide|choose|compare|evaluate|select|prioritize|tradeoff)\b/],
+    ['analysis', /\b(analyze|review|assess|examine|inspect|audit|measure)\b/],
+  ];
+  for (const [domain, regex] of patterns) {
+    if (regex.test(lower)) domains.push(domain);
+  }
+  return domains;
+}
+
+/** Compute confidence deterministically based on problem properties */
+function computeConfidence(
+  strategy: StrategyId,
+  stepCount: number,
+  problem: string,
+): number {
+  const baseConfidence: Record<StrategyId, number> = {
+    cot: 0.72,
+    tot: 0.68,
+    react: 0.70,
+    plan_execute: 0.76,
+  };
+  const base = baseConfidence[strategy] ?? 0.70;
+  const words = wordCount(problem);
+  // More steps → higher confidence; more complex input → slight reduction
+  const stepBonus = Math.min(stepCount * 0.015, 0.15);
+  const complexityPenalty = Math.min(words * 0.003, 0.10);
+  return clamp(base + stepBonus - complexityPenalty, 0.50, 0.95);
+}
+
+// ---------------------------------------------------------------------------
+// Strategy resolution
+// ---------------------------------------------------------------------------
+
+function resolveStrategy(
+  strategy: string | undefined,
+  taskType: string | undefined,
+  taskDescription?: string,
+): StrategyId {
   if (strategy && strategy !== 'auto' && strategy in STRATEGIES) {
     return strategy as StrategyId;
   }
 
   const type = taskType?.toLowerCase() ?? '';
-  if (type === 'math') return 'cot';
-  if (type === 'debugging') return 'react';
-  if (type === 'planning') return 'plan_execute';
-  if (type === 'creative' || type === 'decision') return 'tot';
-  if (type === 'coding') return 'react';
+
+  // Explicit task_type mappings
+  const typeMap: Record<string, StrategyId> = {
+    math: 'cot',
+    logic: 'cot',
+    debugging: 'react',
+    planning: 'plan_execute',
+    creative: 'tot',
+    decision: 'tot',
+    coding: 'react',
+    analysis: 'cot',
+  };
+  if (type in typeMap) return typeMap[type];
+
+  // Keyword-based auto-detection from task description
+  if (taskDescription) {
+    const domains = detectDomains(taskDescription);
+    // Priority: debugging → planning → creative/decision → coding → math → analysis
+    if (domains.includes('debugging')) return 'react';
+    if (domains.includes('planning')) return 'plan_execute';
+    if (domains.includes('creative') || domains.includes('decision')) return 'tot';
+    if (domains.includes('coding')) return 'react';
+    if (domains.includes('math')) return 'cot';
+    if (domains.includes('analysis')) return 'cot';
+  }
 
   return config.defaultStrategy in STRATEGIES ? (config.defaultStrategy as StrategyId) : 'cot';
 }
 
 // ---------------------------------------------------------------------------
-// Reasoning engines
+// Reasoning engines (deterministic)
 // ---------------------------------------------------------------------------
 
 function runChainOfThought(problem: string, maxSteps: number): ReasonResult {
   const steps: ReasonStep[] = [];
-  let thought = problem;
+  const keyPhrases = extractKeyPhrases(problem, maxSteps);
 
-  for (let i = 0; i < Math.min(maxSteps, 10); i++) {
+  // Step 1: Understand
+  steps.push({
+    step: 1,
+    content: `Understanding the problem: ${
+      problem.length > 120 ? problem.substring(0, 117) + '...' : problem
+    }`,
+    type: 'thought',
+  });
+
+  // Steps 2..N: Analyze each key phrase
+  for (let i = 0; i < keyPhrases.length && steps.length < maxSteps - 1; i++) {
+    const phrase = keyPhrases[i];
     steps.push({
-      step: i + 1,
-      content: `Step ${i + 1}: Analyzing "${thought.substring(0, 100)}${
-        thought.length > 100 ? '...' : ''
-      }"`,
+      step: steps.length + 1,
+      content: `Analyzing sub-problem: "${
+        phrase.length > 80 ? phrase.substring(0, 77) + '...' : phrase
+      }" — identifying key constraints, dependencies, and solution approach.`,
       type: 'thought',
     });
-    if (thought.length < 50) break;
-    thought = thought.substring(Math.floor(thought.length / 2));
   }
+
+  // Intermediate synthesis
+  if (keyPhrases.length > 1 && steps.length < maxSteps) {
+    steps.push({
+      step: steps.length + 1,
+      content:
+        'Synthesizing insights from sub-problem analysis — connecting dependencies and resolving any conflicts between partial solutions.',
+      type: 'thought',
+    });
+  }
+
+  // Verification step
+  if (steps.length < maxSteps) {
+    steps.push({
+      step: steps.length + 1,
+      content:
+        'Verifying reasoning chain: checking each step for logical consistency, edge cases, and assumption validity.',
+      type: 'observation',
+    });
+  }
+
+  // Final conclusion
+  const domains = detectDomains(problem);
+  const domainHints = domains.length > 0 ? ` Focus areas identified: ${domains.join(', ')}.` : '';
+  const conclusion =
+    `Chain-of-Thought reasoning complete. The problem has been decomposed into ${keyPhrases.length} sub-components and analyzed sequentially. Each step builds on the previous, forming a coherent logical chain.${domainHints}`;
 
   steps.push({
     step: steps.length + 1,
-    content:
-      'Conclusion: Problem requires systematic decomposition and verification at each stage.',
+    content: conclusion,
     type: 'result',
   });
+
+  const confidence = computeConfidence('cot', steps.length, problem);
 
   return {
     strategy: 'cot',
     problem,
     steps,
-    conclusion:
-      'Break the problem into smaller, verifiable sub-problems and solve each sequentially.',
-    confidence: 0.7 + Math.random() * 0.2,
+    conclusion,
+    confidence,
   };
 }
 
 function runTreeOfThoughts(problem: string): ReasonResult {
   const steps: ReasonStep[] = [];
-  steps.push({ step: 0, content: `Root problem: ${problem}`, type: 'plan' });
-
   const depth = Math.min(config.maxTreeDepth, 5);
-  const breadth = config.treeBreadth;
+  const breadth = Math.min(config.treeBreadth, 5);
+
+  // Root
+  steps.push({
+    step: 0,
+    content: `Root problem state: ${
+      problem.length > 100 ? problem.substring(0, 97) + '...' : problem
+    }`,
+    type: 'plan',
+  });
+
+  // Branch labels
+  const branchLabels = ['A', 'B', 'C', 'D', 'E'];
 
   for (let d = 0; d < depth; d++) {
+    // Generate branches at this depth
     for (let b = 0; b < breadth; b++) {
+      const approachDescriptions = [
+        'direct solution approach',
+        'divide-and-conquer decomposition',
+        'constraint-first analysis',
+        'analogical reasoning from known patterns',
+        'bottom-up construction from primitives',
+      ];
+      const approach = approachDescriptions[b % approachDescriptions.length];
       steps.push({
         step: d * breadth + b + 1,
-        content: `Branch ${b + 1} at depth ${d + 1}: Exploring approach ${
-          String.fromCharCode(65 + b)
-        }`,
+        content: `Depth ${d + 1}, Branch ${
+          branchLabels[b]
+        }: Exploring ${approach} — evaluating feasibility and potential outcomes.`,
         type: 'thought',
       });
     }
+
+    // Evaluate and prune at this depth
+    const scoreSeed = problem.length + d * 37;
+    const bestBranch = Math.floor(deterministicFraction(problem, scoreSeed) * breadth);
+    const pruneCount = breadth > 2 ? breadth - 2 : 0;
+
     steps.push({
       step: (d + 1) * breadth + 1,
       content: `Depth ${d + 1} evaluation: Branch ${
-        Math.floor(Math.random() * breadth) + 1
-      } shows most promise.`,
+        branchLabels[bestBranch]
+      } shows highest promise (score: ${
+        0.65 + deterministicFraction(problem, scoreSeed + 1) * 0.30
+      }). ${
+        pruneCount > 0
+          ? `Pruning ${pruneCount} lower-scoring branches.`
+          : 'Continuing with all branches.'
+      }`,
       type: 'observation',
     });
   }
+
+  const conclusion =
+    'Tree-of-Thoughts exploration complete. Multiple reasoning paths were explored in parallel, evaluated for quality, and pruned to the most promising branches. The surviving path represents the strongest candidate solution identified through breadth-first exploration with iterative refinement.';
+
+  steps.push({
+    step: steps.length + 1,
+    content: conclusion,
+    type: 'result',
+  });
+
+  const confidence = computeConfidence('tot', steps.length, problem);
 
   return {
     strategy: 'tot',
     problem,
     steps,
-    conclusion:
-      'Tree-of-Thoughts exploration complete. Most promising path identified through iterative branching.',
-    confidence: 0.6 + Math.random() * 0.3,
+    conclusion,
+    confidence,
   };
 }
 
 function runReAct(problem: string): ReasonResult {
   const steps: ReasonStep[] = [];
-  const maxIter = Math.min(config.reactMaxIterations, 15);
+  const words = wordCount(problem);
+  // Determine iteration count based on problem complexity
+  const iterationCount = clamp(
+    Math.min(Math.ceil(words / 8), config.reactMaxIterations),
+    2,
+    config.reactMaxIterations,
+  );
 
-  for (let i = 0; i < maxIter && i < 5; i++) {
+  const thoughtTemplates = [
+    'Analyzing the problem structure to identify key unknowns.',
+    'Considering what information is needed to proceed.',
+    'Evaluating potential approaches and their trade-offs.',
+    'Checking assumptions against available evidence.',
+    'Identifying the next logical action to take.',
+    'Reviewing progress and adjusting the approach if needed.',
+    'Synthesizing observations from previous actions.',
+    'Determining if sufficient information exists to conclude.',
+  ];
+
+  const actionTemplates = [
+    'Examining the core requirements and constraints.',
+    'Investigating relevant context and background information.',
+    'Testing a hypothesis against the problem constraints.',
+    'Validating intermediate results for consistency.',
+    'Exploring edge cases and boundary conditions.',
+    'Cross-referencing findings with established patterns.',
+    'Compiling and organizing gathered evidence.',
+    'Performing a final review of the reasoning chain.',
+  ];
+
+  const observationTemplates = [
+    'Key constraints identified — the solution must satisfy all boundary conditions.',
+    'Contextual information reveals additional dependencies to consider.',
+    'Hypothesis partially validated — some adjustments needed for edge cases.',
+    'Intermediate results are consistent with the problem requirements.',
+    'Edge cases reveal subtle interactions that require careful handling.',
+    'Pattern analysis confirms the chosen approach is sound.',
+    'Evidence gathered is sufficient to form a well-supported conclusion.',
+    'Final review confirms all reasoning steps are logically coherent.',
+  ];
+
+  for (let i = 0; i < iterationCount; i++) {
+    const tIdx = i % thoughtTemplates.length;
+    const aIdx = (i + 1) % actionTemplates.length;
+    const oIdx = (i + 2) % observationTemplates.length;
+
     steps.push({
-      step: i * 3 + 1,
-      content: `Thought: Need to examine aspect #${i + 1}.`,
+      step: steps.length + 1,
+      content: `Thought: ${thoughtTemplates[tIdx]}`,
       type: 'thought',
     });
     steps.push({
-      step: i * 3 + 2,
-      content: `Action: Executing investigation on "${problem.substring(0, 50)}..."`,
+      step: steps.length + 1,
+      content: `Action: ${actionTemplates[aIdx]}`,
       type: 'action',
     });
     steps.push({
-      step: i * 3 + 3,
-      content: `Observation: Result indicates ${i % 2 === 0 ? 'positive' : 'needs adjustment'}.`,
+      step: steps.length + 1,
+      content: `Observation: ${observationTemplates[oIdx]}`,
       type: 'observation',
     });
   }
+
+  const conclusion =
+    'ReAct cycle complete. Through interleaved reasoning and action steps with systematic observation, the problem has been thoroughly analyzed. Actions were informed by prior thoughts, and observations refined subsequent reasoning.';
+
+  steps.push({
+    step: steps.length + 1,
+    content: conclusion,
+    type: 'result',
+  });
+
+  const confidence = computeConfidence('react', steps.length, problem);
 
   return {
     strategy: 'react',
     problem,
     steps,
-    conclusion: 'ReAct cycle complete. Actions and observations integrated into final analysis.',
-    confidence: 0.65 + Math.random() * 0.25,
+    conclusion,
+    confidence,
   };
 }
 
 function runPlanExecute(problem: string): ReasonResult {
+  const domains = detectDomains(problem);
+  const domainText = domains.length > 0 ? domains.join(', ') : 'general';
+
   const steps: ReasonStep[] = [
     {
       step: 1,
-      content: 'Phase 1 — PLAN: Analyzing goal and decomposing into sub-tasks.',
+      content:
+        `Phase 1 — PLAN: Analyzing goal (domains: ${domainText}) and decomposing into sub-tasks.`,
       type: 'plan',
     },
-    { step: 2, content: 'Sub-task 1: Understand requirements and constraints.', type: 'plan' },
-    { step: 3, content: 'Sub-task 2: Gather necessary context and data.', type: 'plan' },
-    { step: 4, content: 'Sub-task 3: Execute core logic/transformation.', type: 'plan' },
-    { step: 5, content: 'Sub-task 4: Verify and validate results.', type: 'plan' },
-    { step: 6, content: 'Phase 2 — EXECUTE: Starting sub-task 1.', type: 'thought' },
-    { step: 7, content: 'Sub-task 1 complete. Requirements understood.', type: 'observation' },
-    { step: 8, content: 'Sub-task 2 complete. Context gathered.', type: 'observation' },
-    { step: 9, content: 'Sub-task 3 complete. Core logic executed.', type: 'observation' },
-    { step: 10, content: 'All sub-tasks complete. Results verified.', type: 'result' },
+    {
+      step: 2,
+      content: 'Sub-task 1 [UNDERSTAND]: Clarify requirements, constraints, and success criteria.',
+      type: 'plan',
+    },
+    {
+      step: 3,
+      content: 'Sub-task 2 [GATHER]: Collect necessary context, data, and reference materials.',
+      type: 'plan',
+    },
+    {
+      step: 4,
+      content: 'Sub-task 3 [EXECUTE]: Perform the core logic, transformation, or computation.',
+      type: 'plan',
+    },
+    {
+      step: 5,
+      content: 'Sub-task 4 [VERIFY]: Validate results against requirements and check for errors.',
+      type: 'plan',
+    },
+    {
+      step: 6,
+      content: 'Sub-task 5 [REFINE]: Iterate on the solution based on verification feedback.',
+      type: 'plan',
+    },
+    {
+      step: 7,
+      content: 'Phase 2 — EXECUTE: Beginning sub-task 1 (UNDERSTAND).',
+      type: 'thought',
+    },
+    {
+      step: 8,
+      content:
+        'Sub-task 1 complete: Requirements clarified, constraints documented, success criteria defined.',
+      type: 'observation',
+    },
+    {
+      step: 9,
+      content: 'Sub-task 2 complete: Context and reference materials gathered and organized.',
+      type: 'observation',
+    },
+    {
+      step: 10,
+      content: 'Sub-task 3 complete: Core logic executed successfully with results captured.',
+      type: 'observation',
+    },
+    {
+      step: 11,
+      content:
+        'Sub-task 4 complete: Results verified — all requirements satisfied, no errors detected.',
+      type: 'observation',
+    },
   ];
+
+  // Only add refine step if problem is complex enough
+  if (wordCount(problem) > 15) {
+    steps.push({
+      step: steps.length + 1,
+      content: 'Sub-task 5 complete: Solution refined based on verification — edge cases handled.',
+      type: 'observation',
+    });
+  }
+
+  const conclusion =
+    'Plan-and-Execute complete. All sub-tasks were planned, ordered by dependency, executed sequentially, and verified. The structured two-phase approach ensures complete coverage and traceable reasoning.';
+
+  steps.push({
+    step: steps.length + 1,
+    content: conclusion,
+    type: 'result',
+  });
+
+  const confidence = computeConfidence('plan_execute', steps.length, problem);
 
   return {
     strategy: 'plan_execute',
     problem,
     steps,
-    conclusion:
-      'Plan-and-Execute complete. All sub-tasks executed and verified in dependency order.',
-    confidence: 0.75 + Math.random() * 0.15,
+    conclusion,
+    confidence,
   };
 }
 
@@ -287,11 +550,14 @@ const reasonTool: Tool = {
   },
 
   // deno-lint-ignore require-await
-  execute: async (args: Record<string, unknown>, _ctx: PluginContext): Promise<ToolCallResult> => {
+  execute: async (
+    args: Record<string, unknown>,
+    _ctx: ToolContext,
+  ): Promise<ToolCallResult> => {
     const start = Date.now();
     const toolName = 'reason';
     try {
-      if (!args.problem || typeof args.problem !== 'string') {
+      if (!args.problem || typeof args.problem !== 'string' || args.problem.trim().length === 0) {
         return {
           toolName,
           success: false,
@@ -301,11 +567,13 @@ const reasonTool: Tool = {
         };
       }
 
-      const problem = args.problem as string;
+      const problem = (args.problem as string).trim();
       const context = (args.context as string) || '';
-      const maxSteps = (args.max_steps as number) || 10;
-      const strategy = resolveStrategy(args.strategy as string | undefined, undefined);
+      const maxSteps = typeof args.max_steps === 'number' ? args.max_steps : 10;
+      const strategyArg = args.strategy as string | undefined;
       const fullProblem = context ? `${problem}\n\nContext:\n${context}` : problem;
+
+      const strategy = resolveStrategy(strategyArg, undefined, problem);
 
       let result: ReasonResult;
       switch (strategy) {
@@ -319,7 +587,7 @@ const reasonTool: Tool = {
           result = runPlanExecute(fullProblem);
           break;
         default:
-          result = runChainOfThought(fullProblem, maxSteps);
+          result = runChainOfThought(fullProblem, Math.max(1, maxSteps));
           break;
       }
 
@@ -355,7 +623,10 @@ const listStrategies: Tool = {
   },
 
   // deno-lint-ignore require-await
-  execute: async (_args: Record<string, unknown>, _ctx: PluginContext): Promise<ToolCallResult> => {
+  execute: async (
+    _args: Record<string, unknown>,
+    _ctx: ToolContext,
+  ): Promise<ToolCallResult> => {
     const start = Date.now();
     try {
       const strategies = Object.values(STRATEGIES).map((s) => ({
@@ -421,11 +692,18 @@ const selectStrategy: Tool = {
   },
 
   // deno-lint-ignore require-await
-  execute: async (args: Record<string, unknown>, _ctx: PluginContext): Promise<ToolCallResult> => {
+  execute: async (
+    args: Record<string, unknown>,
+    _ctx: ToolContext,
+  ): Promise<ToolCallResult> => {
     const start = Date.now();
     const toolName = 'select_strategy';
     try {
-      if (!args.task_description || typeof args.task_description !== 'string') {
+      if (
+        !args.task_description ||
+        typeof args.task_description !== 'string' ||
+        args.task_description.trim().length === 0
+      ) {
         return {
           toolName,
           success: false,
@@ -435,28 +713,34 @@ const selectStrategy: Tool = {
         };
       }
 
-      const taskDescription = args.task_description as string;
+      const taskDescription = (args.task_description as string).trim();
       const taskType = args.task_type as string | undefined;
-      const strategyId = resolveStrategy(undefined, taskType);
+      const strategyId = resolveStrategy(undefined, taskType, taskDescription);
       const strategy = STRATEGIES[strategyId];
 
-      let reason: string;
-      const descLower = taskDescription.toLowerCase();
-      if (descLower.includes('debug') || descLower.includes('fix') || descLower.includes('error')) {
-        reason = `Selected ${strategy.name} because the task involves debugging.`;
-      } else if (
-        descLower.includes('plan') || descLower.includes('design') ||
-        descLower.includes('architect')
-      ) {
-        reason = `Selected ${strategy.name} because the task involves planning.`;
-      } else if (descLower.includes('create') || descLower.includes('generate')) {
-        reason = `Selected ${strategy.name} because the task involves creation.`;
-      } else if (taskType) {
-        reason =
-          `Selected ${strategy.name} because task type "${taskType}" matches strategy strengths.`;
-      } else {
-        reason = `Selected ${strategy.name} as the best-fit strategy based on task analysis.`;
-      }
+      // Build a descriptive reason
+      const domains = detectDomains(taskDescription);
+      const reasonType = taskType ?? (domains.length > 0 ? domains[0] : 'general');
+      const reasonMap: Record<string, string> = {
+        debugging:
+          `Selected ${strategy.name} because the task involves debugging or error resolution, which benefits from systematic reasoning with observation cycles.`,
+        planning:
+          `Selected ${strategy.name} because the task involves planning or design, requiring structured decomposition of goals.`,
+        creative:
+          `Selected ${strategy.name} because the task involves creative generation, which benefits from exploring multiple reasoning paths.`,
+        decision:
+          `Selected ${strategy.name} because the task involves decision-making with multiple options to evaluate.`,
+        coding:
+          `Selected ${strategy.name} because the task involves code generation or modification, requiring iterative reasoning and validation.`,
+        math:
+          `Selected ${strategy.name} because the task involves mathematical or logical reasoning, which benefits from step-by-step deduction.`,
+        analysis:
+          `Selected ${strategy.name} because the task involves analysis or review, requiring thorough systematic examination.`,
+      };
+      const reason = reasonMap[reasonType] ??
+        `Selected ${strategy.name} as the best-fit strategy based on comprehensive task analysis (detected domains: ${
+          domains.length > 0 ? domains.join(', ') : 'general problem-solving'
+        }).`;
 
       return {
         toolName,
@@ -510,11 +794,18 @@ const evaluateReasoning: Tool = {
   },
 
   // deno-lint-ignore require-await
-  execute: async (args: Record<string, unknown>, _ctx: PluginContext): Promise<ToolCallResult> => {
+  execute: async (
+    args: Record<string, unknown>,
+    _ctx: ToolContext,
+  ): Promise<ToolCallResult> => {
     const start = Date.now();
     const toolName = 'evaluate_reasoning';
     try {
-      if (!args.reasoning_trace || typeof args.reasoning_trace !== 'string') {
+      if (
+        !args.reasoning_trace ||
+        typeof args.reasoning_trace !== 'string' ||
+        args.reasoning_trace.trim().length === 0
+      ) {
         return {
           toolName,
           success: false,
@@ -524,51 +815,160 @@ const evaluateReasoning: Tool = {
         };
       }
 
+      const trace = args.reasoning_trace as string;
       const criteriaStr = (args.criteria as string) || 'logic,completeness,clarity';
-      const criteria = criteriaStr.split(',').map((c) => c.trim());
+      const criteria = criteriaStr.split(',').map((c) => c.trim().toLowerCase()).filter(Boolean);
+
+      // Deterministic scoring based on trace properties
+      const traceWords = wordCount(trace);
+      const traceLower = trace.toLowerCase();
+
+      // Count reasoning steps (look for "Step", numbered items, etc.)
+      const stepMatches = trace.match(/step\s*\d+/gi);
+      const stepCount = stepMatches ? stepMatches.length : 1;
+
+      // Look for logical connectors
+      const logicalConnectors = [
+        'therefore',
+        'because',
+        'since',
+        'thus',
+        'hence',
+        'consequently',
+        'as a result',
+        'it follows',
+        'this implies',
+        'leads to',
+      ];
+      const logicMatches = logicalConnectors.filter((conn) => traceLower.includes(conn));
+      const logicDensity = clamp(logicMatches.length / Math.max(stepCount, 1), 0, 1);
+
+      // Look for conclusion indicators
+      const conclusionIndicators = [
+        'conclusion',
+        'therefore',
+        'in summary',
+        'finally',
+        'overall',
+        'in conclusion',
+        'to summarize',
+        'result',
+      ];
+      const hasConclusion = conclusionIndicators.some((ind) => traceLower.includes(ind));
+
+      // Clarity: based on average sentence length and structure
+      const sentences = trace.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+      const avgSentenceLength = sentences.length > 0
+        ? sentences.reduce((sum, s) => sum + s.trim().split(/\s+/).length, 0) / sentences.length
+        : 0;
+      // Ideal sentence length is 10-25 words for clarity
+      const clarityScore = avgSentenceLength > 0
+        ? 1.0 - Math.abs(avgSentenceLength - 17) / 30
+        : 0.5;
 
       const scores: Record<string, { score: number; feedback: string }> = {};
+
       for (const criterion of criteria) {
-        const score = 0.5 + Math.random() * 0.45;
-        let feedback: string;
         switch (criterion) {
-          case 'logic':
-            feedback = score > 0.7
-              ? 'Logical flow is consistent.'
-              : 'Some logical leaps detected. Add intermediate steps.';
+          case 'logic': {
+            const score = clamp(0.35 + logicDensity * 0.55, 0, 1);
+            scores[criterion] = {
+              score: Math.round(score * 100) / 100,
+              feedback: score > 0.65
+                ? 'Logical flow is consistent with clear causal connections between steps.'
+                : score > 0.4
+                ? 'Some logical connections present but could benefit from more explicit reasoning links.'
+                : 'Logical gaps detected. Add more intermediate reasoning steps with explicit connectors.',
+            };
             break;
-          case 'completeness':
-            feedback = score > 0.7
-              ? 'Covers key aspects of the problem.'
-              : 'Some aspects not addressed. Expand coverage.';
+          }
+          case 'completeness': {
+            const completeness = clamp(
+              0.3 +
+                (hasConclusion ? 0.3 : 0) +
+                Math.min(stepCount * 0.05, 0.25) +
+                Math.min(traceWords * 0.001, 0.15),
+              0,
+              1,
+            );
+            scores[criterion] = {
+              score: Math.round(completeness * 100) / 100,
+              feedback: completeness > 0.65
+                ? 'Covers key aspects of the problem with a clear conclusion.'
+                : completeness > 0.4
+                ? 'Some aspects addressed but the reasoning could be more thorough.'
+                : 'Several aspects not addressed. Expand coverage and include a clear conclusion.',
+            };
             break;
-          case 'clarity':
-            feedback = score > 0.7
-              ? 'Reasoning is clear and well-articulated.'
-              : 'Some steps are ambiguous.';
+          }
+          case 'clarity': {
+            const score = clamp(clarityScore, 0, 1);
+            scores[criterion] = {
+              score: Math.round(score * 100) / 100,
+              feedback: score > 0.65
+                ? 'Reasoning is clear and well-articulated with appropriate detail level.'
+                : score > 0.4
+                ? 'Reasoning is understandable but some steps could be more clearly expressed.'
+                : 'Some steps are ambiguous or overly complex. Simplify language and structure.',
+            };
             break;
-          default:
-            feedback = score > 0.7 ? 'Satisfactory quality.' : 'Room for improvement.';
+          }
+          default: {
+            // Generic evaluation for custom criteria
+            const score = clamp(
+              0.4 + (stepCount > 2 ? 0.2 : 0) + (traceWords > 50 ? 0.2 : 0),
+              0,
+              1,
+            );
+            scores[criterion] = {
+              score: Math.round(score * 100) / 100,
+              feedback: score > 0.6
+                ? 'Satisfactory quality based on available analysis.'
+                : 'Room for improvement — consider expanding the reasoning.',
+            };
+          }
         }
-        scores[criterion] = { score: Math.round(score * 100) / 100, feedback };
       }
 
-      const overallScore = Object.values(scores).reduce((sum, s) => sum + s.score, 0) /
-        Object.values(scores).length;
+      const overallScore = Object.keys(scores).length > 0
+        ? Math.round(
+          (Object.values(scores).reduce((sum, s) => sum + s.score, 0) /
+            Object.values(scores).length) *
+            100,
+        ) / 100
+        : 0.5;
+
+      // Generate specific recommendations
+      const recommendations: string[] = [];
+      if (stepCount < 3) {
+        recommendations.push('Add more intermediate reasoning steps for better traceability.');
+      }
+      if (!hasConclusion) {
+        recommendations.push('Include an explicit conclusion to summarize the reasoning.');
+      }
+      if (logicDensity < 0.3) {
+        recommendations.push(
+          'Strengthen logical connections between steps using connectors (therefore, because, thus).',
+        );
+      }
+      if (clarityScore < 0.5) {
+        recommendations.push(
+          'Improve clarity by using shorter sentences and more structured formatting.',
+        );
+      }
+      if (recommendations.length === 0) {
+        recommendations.push(
+          'Reasoning is generally solid. Minor refinements could further improve clarity.',
+        );
+      }
 
       return {
         toolName,
         success: true,
         output: JSON.stringify({
-          overallScore: Math.round(overallScore * 100) / 100,
+          overallScore,
           criteria: scores,
-          recommendations: overallScore < 0.7
-            ? [
-              'Add more intermediate reasoning steps',
-              'Support claims with evidence',
-              'Check for logical gaps',
-            ]
-            : ['Reasoning is solid. Minor refinements could improve clarity.'],
+          recommendations,
         }),
         durationMs: Date.now() - start,
       };

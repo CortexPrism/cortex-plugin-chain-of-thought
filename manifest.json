@@ -1,6 +1,6 @@
 {
   "name": "cortex-plugin-chain-of-thought",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Pluggable reasoning strategies (Chain-of-Thought, Tree-of-Thoughts, ReAct, Plan-and-Execute) that agents can dynamically select per-task for smarter problem-solving",
   "kind": "esm",
   "entryPoint": "mod.ts",

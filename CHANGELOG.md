@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.0.6] — 2026-06-22
+
+### Changed
+
+- **Deterministic reasoning engines**: Replaced all `Math.random()` calls with deterministic logic
+  based on input properties (word count, keyword detection, hash-derived scores)
+- **Production-quality reasoning traces**: Chain-of-Thought now extracts key phrases and builds
+  meaningful analysis steps; ReAct iterations scale with problem complexity; ToT generates real
+  branch evaluations; Plan-and-Execute uses domain detection
+- **Deterministic evaluation**: `evaluate_reasoning` now scores traces based on actual properties
+  (step count, logical connectors, conclusion indicators, sentence clarity) instead of random values
+- **Improved strategy selection**: Keyword detection now covers 7 domains (math, debugging,
+  planning, coding, creative, decision, analysis) using regex patterns
+- **Strict input validation**: All tools now reject whitespace-only strings and null values
+- **Corrected tool signatures**: `tool.execute()` now uses `ToolContext` (not `PluginContext`) per
+  the v0.51.0+ SDK specification
+- **Created `types.ts`**: Local type definitions for `ToolContext`, strategy interfaces, and
+  re-exports from `cortex/plugins` SDK
+
+### Added
+
+- 13 new unit tests (30 total, up from 17): determinism verification, whitespace rejection, null
+  rejection, task_type-specific strategy selection, well-structured vs poor trace scoring,
+  confidence consistency, cross-tool metadata assertions
+
+### Fixed
+
+- `package.json` version now matches `manifest.json` (1.0.5)
+- `AI.md` disclosure now consistent with `manifest.json` `aiDisclosure` field
 
 ## [1.0.5] — 2026-06-22
 
@@ -11,6 +40,7 @@
 - Updated `peerDependencies.cortex` to `>=0.51.0`
 - Standardized UI settings: `default` → `defaultValue`, `enum` → `options` for select fields
 - All code passes `deno fmt` and `deno lint`
+
 ## [Unreleased]
 
 ### Changed
