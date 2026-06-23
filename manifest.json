@@ -1,6 +1,6 @@
 {
   "name": "cortex-plugin-chain-of-thought",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Pluggable reasoning strategies (Chain-of-Thought, Tree-of-Thoughts, ReAct, Plan-and-Execute) that agents can dynamically select per-task for smarter problem-solving",
   "kind": "esm",
   "entryPoint": "mod.ts",
@@ -103,7 +103,7 @@
   ],
   "dependencies": {},
   "peerDependencies": {
-    "cortex": ">=1.0.0"
+    "cortex": ">=0.51.0"
   },
   "ui": {
     "settings": [
@@ -115,8 +115,8 @@
             "label": "Default Strategy",
             "type": "select",
             "description": "Default reasoning strategy when none is specified",
-            "default": "auto",
-            "enum": [
+            "defaultValue": "auto",
+            "options": [
               {
                 "label": "Auto-detect",
                 "value": "auto"
@@ -144,21 +144,21 @@
             "label": "Max Tree Depth (ToT)",
             "type": "number",
             "description": "Maximum depth for Tree-of-Thoughts branching",
-            "default": 5
+            "defaultValue": 5
           },
           {
             "key": "treeBreadth",
             "label": "Tree Breadth (ToT)",
             "type": "number",
             "description": "Number of branches to explore per node in Tree-of-Thoughts",
-            "default": 3
+            "defaultValue": 3
           },
           {
             "key": "reactMaxIterations",
             "label": "ReAct Max Iterations",
             "type": "number",
             "description": "Maximum thought-action-observation cycles for ReAct strategy",
-            "default": 15
+            "defaultValue": 15
           }
         ]
       }

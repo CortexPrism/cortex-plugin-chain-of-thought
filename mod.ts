@@ -7,7 +7,7 @@
  * #1 in the official plugin registry.
  */
 
-import type { PluginContext, Tool, ToolCallResult, ToolContext } from './types.ts';
+import type { PluginContext, Tool, ToolCallResult } from 'cortex/plugins';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -287,7 +287,7 @@ const reasonTool: Tool = {
   },
 
   // deno-lint-ignore require-await
-  execute: async (args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolCallResult> => {
+  execute: async (args: Record<string, unknown>, _ctx: PluginContext): Promise<ToolCallResult> => {
     const start = Date.now();
     const toolName = 'reason';
     try {
@@ -355,7 +355,7 @@ const listStrategies: Tool = {
   },
 
   // deno-lint-ignore require-await
-  execute: async (_args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolCallResult> => {
+  execute: async (_args: Record<string, unknown>, _ctx: PluginContext): Promise<ToolCallResult> => {
     const start = Date.now();
     try {
       const strategies = Object.values(STRATEGIES).map((s) => ({
@@ -421,7 +421,7 @@ const selectStrategy: Tool = {
   },
 
   // deno-lint-ignore require-await
-  execute: async (args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolCallResult> => {
+  execute: async (args: Record<string, unknown>, _ctx: PluginContext): Promise<ToolCallResult> => {
     const start = Date.now();
     const toolName = 'select_strategy';
     try {
@@ -510,7 +510,7 @@ const evaluateReasoning: Tool = {
   },
 
   // deno-lint-ignore require-await
-  execute: async (args: Record<string, unknown>, _ctx: ToolContext): Promise<ToolCallResult> => {
+  execute: async (args: Record<string, unknown>, _ctx: PluginContext): Promise<ToolCallResult> => {
     const start = Date.now();
     const toolName = 'evaluate_reasoning';
     try {
